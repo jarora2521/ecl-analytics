@@ -1,16 +1,69 @@
+# services/ecl_service.py
 import pandas as pd
 import os
 import numpy as np
+from pathlib import Path
 import math
 
-DATA_PATH = os.path.join("..", "data", "loan_data.csv")
+DEFAULT_FILENAME = "loan_data.csv"
 
-def load_data(path=DATA_PATH):
-    try:
-        df = pd.read_csv(path)
-    except FileNotFoundError:
-        df = pd.read_csv(os.path.join("data", "loan_data.csv"))
+def _candidates_for(filename=DEFAULT_FILENAME):
+    """
+    Ordered candidate absolute paths to try for the CSV file.
+    Assumes this file is at backend/services/ecl_service.py so:
+      repo_root = here.parent.parent
+    """
+    here = Path(__file__).resolve().parent       # .../backend/services
+    repo_root = here.parent.parent.resolve()      # .../  (repo root)
+    candidates = [
+        # 1) explicit env override (if present) - keep as Path or None
+        Path(os.getenv("DATA_PATH")) if os.getenv("DATA_PATH") else None,
+        # 2) repo_root/data/filename  (preferred since your data is at repo_root/data)
+        repo_root / "data" / filename,
+        # 3) repo_root/backend/data/filename (in case)
+        repo_root / "backend" / "data" / filename,
+        # 4) backend/data/filename (relative to services file)
+        here.parent / "data" / filename,
+        # 5) runtime CWD /data/filename
+        Path.cwd() / "data" / filename,
+    ]
+    # Return only non-None, unresolved (we'll resolve later)
+    return [p for p in candidates if p is not None]
 
+def _find_file(filename=DEFAULT_FILENAME):
+    tried = []
+    for p in _candidates_for(filename):
+        try:
+            p_res = p.resolve()
+        except Exception:
+            p_res = p
+        exists = p_res.exists() if isinstance(p_res, Path) else False
+        tried.append((str(p_res), exists))
+        if exists:
+            return str(p_res)
+    debug_lines = "\n".join(f"{i+1}. {path} (exists={exists})" for i,(path,exists) in enumerate(tried))
+    raise FileNotFoundError(
+        f"Could not find {filename}. Tried:\n{debug_lines}\n\n"
+        "Tip: set DATA_PATH env var to the absolute path of the file if it is in a custom location."
+    )
+
+def load_data(filename=DEFAULT_FILENAME):
+    """
+    Load the CSV with pandas. Uses DATA_PATH env var if set; otherwise searches
+    likely repo locations. Returns a pandas DataFrame.
+    """
+    env_path = os.getenv("DATA_PATH")
+    if env_path:
+        env_p = Path(env_path)
+        if not env_p.exists():
+            raise FileNotFoundError(f"DATA_PATH is set to {env_path} but that file does not exist.")
+        path_to_read = str(env_p.resolve())
+    else:
+        path_to_read = _find_file(filename)
+
+    # Helpful log to appear in Render logs
+    print(f"[ecl_service] Reading CSV from: {path_to_read}")
+    df = pd.read_csv(path_to_read)
     return df
 
 
