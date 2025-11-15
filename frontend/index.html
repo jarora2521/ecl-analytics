@@ -1,0 +1,456 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ECL Analytics - Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial; margin: 18px; max-width: 1100px; }
+    header { display:flex; gap:12px; align-items:center; margin-bottom:18px; }
+    .card { border:1px solid #ddd; padding:12px; border-radius:8px; margin-bottom:12px; background:#fff;}
+    label { display:block; margin-top:8px; font-weight:600; }
+    select, input { padding:8px; width:240px; }
+    button { padding:8px 12px; margin-top:8px; cursor:pointer; }
+    button.small { padding:6px 10px; font-size:0.9rem; }
+    table { border-collapse:collapse; width:100%; margin-top:12px; background:#fff; }
+    th,td { padding:8px; border:1px solid #eee; text-align:left; }
+    .small { font-size:0.9rem; color:#555; }
+    .flex { display:flex; gap:12px; align-items:center; }
+    .chart-wrap { width:100%; max-width:900px; height:360px; }
+    a.link { color: #007bff; text-decoration:none; }
+    ul { padding-left:18px; }
+    li { margin-bottom:6px; }
+    .muted { color:#666; font-size:0.9rem; }
+  </style>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<header>
+  <h2>ECL Analytics — Demo</h2>
+  <div class="small">Backend: <strong>http://127.0.0.1:8000</strong></div>
+</header>
+
+<div class="card">
+  <div style="display:flex; gap:12px; align-items:center;">
+    <div>
+      <label>Username</label>
+      <input id="username" autocomplete="off" placeholder="analyst" />
+    </div>
+    <div>
+      <label>Password</label>
+      <input id="password" type="password" autocomplete="off" placeholder="analyst123" />
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <button id="btnLogin">Login</button>
+    </div>
+    <div style="margin-left:auto">
+      <div id="roleBadge" class="small">Not logged in</div>
+    </div>
+  </div>
+</div>
+
+<div id="controls" style="display:none">
+  <div class="card">
+    <div class="flex">
+      <div>
+        <label>Segment</label>
+        <select id="segmentSelect"></select>
+      </div>
+      <div>
+        <label>Choose segment value (after loading)</label>
+        <select id="segmentValue"></select>
+      </div>
+      <div style="align-self:flex-end; display:flex; gap:8px;">
+        <div>
+          <button id="btnLoadEcl">Load ECL</button>
+        </div>
+        <div>
+          <button id="btnSaveReport" class="small">Save report</button>
+          <button id="btnViewReports" class="small">View reports</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>ECL Summary</h4>
+    <div id="summaryInfo" class="small"></div>
+    <div id="tableWrap"></div>
+  </div>
+
+  <div class="card" id="reportsCard" style="display:none">
+    <h4>Past Reports</h4>
+    <div id="reportsWrap" class="small muted">No saved reports yet.</div>
+  </div>
+
+  <div class="card">
+    <h4>ECL Charts</h4>
+    <div class="chart-wrap">
+      <canvas id="barChart"></canvas>
+    </div>
+    <div style="height:20px"></div>
+    <div class="chart-wrap">
+      <canvas id="lineChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+
+let token = null;
+let role = null;
+let barChart = null;
+let lineChart = null;
+let lastSummary = [];
+
+async function login() {
+  const username = document.getElementById('username').value;
+  const password = document.getElementById('password').value;
+
+  try {
+    const res = await fetch(API_BASE + '/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ username, password })
+    });
+    if (!res.ok) throw new Error("Login failed");
+    const data = await res.json();
+    token = data.token;
+    role = data.role;
+    document.getElementById('roleBadge').innerText = `Role: ${role}`;
+    document.getElementById('controls').style.display = 'block';
+    await loadSegments();
+  } catch (err) {
+    alert("Login failed. Check server is running and credentials.");
+    console.error(err);
+  }
+}
+
+async function loadSegments() {
+  const res = await fetch(API_BASE + '/segments');
+  const data = await res.json();
+  const sel = document.getElementById('segmentSelect');
+  sel.innerHTML = '';
+  (data.segments || []).forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => loadSegmentValues(sel.value));
+  // auto load values for first
+  if (sel.options.length) await loadSegmentValues(sel.options[0].value);
+}
+
+async function loadSegmentValues(segment) {
+  const valuesSelect = document.getElementById('segmentValue');
+  valuesSelect.innerHTML = '<option>Loading...</option>';
+  // We'll call /ecl to get all segment rows and populate values from summary
+  const res = await fetch(`${API_BASE}/ecl/${segment}`);
+  if (!res.ok) {
+    valuesSelect.innerHTML = '<option>Error</option>';
+    return;
+  }
+  const data = await res.json();
+  const summary = data.summary || [];
+  lastSummary = summary;
+  valuesSelect.innerHTML = '';
+  summary.forEach(row => {
+    const rawVal = (row[segment] === null || row[segment] === undefined) ? "" : String(row[segment]);
+    const opt = document.createElement('option');
+    opt.value = rawVal;
+    opt.textContent = `${rawVal} (ECL: ${Number(row.ECL || 0).toLocaleString(undefined, {minimumFractionDigits:3, maximumFractionDigits:3})})`;
+    valuesSelect.appendChild(opt);
+  });
+  // Render full summary table and bar chart
+  renderTable(summary, segment);
+  renderBarChart(summary, segment);
+}
+
+function renderTable(rows, segment, onlyValue=null) {
+  const wrap = document.getElementById('tableWrap');
+  if (!rows || !rows.length) { wrap.innerHTML = "<div class='small'>No rows</div>"; return; }
+
+  // If onlyValue is provided, filter rows to that single value
+  let displayRows = rows;
+  if (onlyValue !== null && onlyValue !== undefined && onlyValue !== "") {
+    displayRows = rows.filter(r => String(r[segment]).trim().toUpperCase() === String(onlyValue).trim().toUpperCase());
+    if (!displayRows.length) {
+      wrap.innerHTML = "<div class='small'>No data for selected value</div>";
+      return;
+    }
+  }
+
+  // Build table header (include action + reason columns if present)
+  let html = '<table><thead><tr>';
+  // Note: order here must match the cell printing below
+  const keys = ['total_loans','defaults','PD','exposure','LGD','ECL'];
+  html += `<th style="min-width:160px">${segment}</th>` + keys.map(k => `<th>${k}</th>`).join('');
+  // if backend returned action/reason in any row, show columns
+  const hasAction = displayRows.some(r => r.action !== undefined);
+  const hasReason = displayRows.some(r => r.reason !== undefined);
+  if (hasAction) html += '<th>action</th>';
+  if (hasReason) html += '<th>reason</th>';
+  html += '</tr></thead><tbody>';
+
+  // Row formatter — keep the order consistent with keys array above
+  displayRows.forEach(r => {
+    html += `<tr><td>${r[segment]}</td>`;
+    // total_loans (integer)
+    html += `<td>${Number(r.total_loans||0).toLocaleString()}</td>`;
+    // defaults (integer)
+    html += `<td>${Number(r.defaults||0).toLocaleString()}</td>`;
+    // PD (3 decimals)
+    html += `<td>${(r.PD!==undefined && r.PD!=='') ? Number(r.PD).toFixed(3) : ''}</td>`;
+    // exposure (thousand separators)
+    html += `<td>${(r.exposure!==undefined && r.exposure!=='') ? Number(r.exposure).toLocaleString() : ''}</td>`;
+    // LGD (show up to 3 decimals; if whole number show as integer)
+    html += `<td>${(r.LGD!==undefined && r.LGD!=='') ? Number(r.LGD).toLocaleString(undefined, {maximumFractionDigits:3}) : ''}</td>`;
+    // ECL (show with 3 decimal places + separators)
+    html += `<td>${(r.ECL!==undefined && r.ECL!=='') ? Number(r.ECL).toLocaleString(undefined, {minimumFractionDigits:3, maximumFractionDigits:3}) : ''}</td>`;
+
+    if (hasAction) html += `<td>${r.action || ''}</td>`;
+    if (hasReason) html += `<td title="${(r.reason||'')}">${r.reason || ''}</td>`;
+    html += `</tr>`;
+  });
+
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+  // clear top text if already set
+  // (summaryInfo is used when a curve is loaded)
+  if (!document.getElementById('summaryInfo').innerText) {
+    // leave blank
+  }
+}
+
+function renderBarChart(rows, segment) {
+  const labels = rows.map(r => String(r[segment]));
+  const values = rows.map(r => Number(r.ECL || 0));
+  const ctx = document.getElementById('barChart').getContext('2d');
+  if (barChart) barChart.destroy();
+  barChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'ECL (USD)',
+        data: values,
+        backgroundColor: 'rgba(54, 162, 235, 0.5)',
+        borderColor: 'rgba(54, 162, 235, 0.9)',
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive:true,
+      plugins: {
+        legend: { display:false },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const v = context.raw || 0;
+              return 'ECL: ' + Number(v).toLocaleString(undefined, {minimumFractionDigits:3, maximumFractionDigits:3});
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero:true,
+          ticks: {
+            callback: function(value) { return Number(value).toLocaleString(); }
+          }
+        }
+      }
+    }
+  });
+
+  // Make bars clickable by listening to clicks and mapping to index
+  document.getElementById('barChart').onclick = (evt) => {
+    const points = barChart.getElementsAtEventForMode(evt, 'nearest', { intersect: true }, true);
+    if (points.length) {
+      const idx = points[0].index;
+      const selectedValue = labels[idx];
+      // set the raw value in select (value matches rawVal created earlier)
+      document.getElementById('segmentValue').value = selectedValue;
+      // filter table to selected value and load curve
+      renderTable(lastSummary, segment, selectedValue);
+      loadCurve(document.getElementById('segmentSelect').value, selectedValue);
+    }
+  };
+}
+
+async function loadCurve(segment, value) {
+  if (!value) {
+    alert("Please select a segment value first.");
+    return;
+  }
+  const url = `${API_BASE}/curve/${segment}/${encodeURIComponent(value)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    alert("No curve data for that value (server returned status " + res.status + ").");
+    return;
+  }
+  const data = await res.json();
+  const curve = data.curve || [];
+  // sort by bucket label order if present (attempt natural order)
+  const labels = curve.map(r => r.credit_history_bucket);
+  const values = curve.map(r => Number(r.ECL || 0));
+  renderLineChart(labels, values, `${segment} = ${value}`);
+  document.getElementById('summaryInfo').innerText = `Curve loaded for ${value}: ${curve.length} buckets`;
+}
+
+function renderLineChart(labels, values, title) {
+  const ctx = document.getElementById('lineChart').getContext('2d');
+  if (lineChart) lineChart.destroy();
+  lineChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [{ label: title || 'ECL over history', data: values, fill:false, tension:0.2, pointRadius:4, backgroundColor:'rgba(54,162,235,0.3)', borderColor:'rgba(54,162,235,0.9)'}]},
+    options: {
+      responsive:true,
+      plugins: { legend: { display:false }, tooltip: { callbacks: { label: (c) => Number(c.raw).toLocaleString(undefined, {minimumFractionDigits:3, maximumFractionDigits:3}) } } },
+      scales: {
+        y: {
+          beginAtZero:true,
+          ticks: {
+            callback: function(value) { return Number(value).toLocaleString(); }
+          }
+        }
+      }
+    }
+  });
+}
+
+/* ---------- Reports (save / list) ---------- */
+
+async function saveCurrentReport() {
+  // prepare small payload: name, selected segment & value, summary rows shown
+  const seg = document.getElementById('segmentSelect').value;
+  const val = document.getElementById('segmentValue').value || null;
+  const defaultName = `${seg}${val ? '_' + val : ''}`;
+  const name = prompt("Enter a name for this report:", defaultName);
+  if (name === null) return; // user cancelled
+
+  // Ask whether to save only the current view or the full summary
+  const saveOnlyView = confirm("Click OK to save ONLY the current view (selected segment value).\nClick Cancel to save the FULL segment summary (all values).");
+
+  let payloadSummary;
+  if (saveOnlyView) {
+    if (val !== null && val !== undefined && String(val).trim() !== "") {
+      payloadSummary = (lastSummary || []).filter(r => String(r[seg]).trim().toUpperCase() === String(val).trim().toUpperCase());
+    } else {
+      // if nothing selected, current view == full summary
+      payloadSummary = lastSummary || [];
+    }
+  } else {
+    // save full segment summary (all values)
+    payloadSummary = lastSummary || [];
+  }
+
+  const payload = {
+    name,
+    segment: seg,
+    segment_value: saveOnlyView ? val : null, // null when full summary saved
+    summary: payloadSummary
+  };
+
+  try {
+    const res = await fetch(`${API_BASE}/reports`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    alert("Report saved.");
+    // Do NOT automatically show the reports card — user will click View reports when ready.
+  } catch (err) {
+    console.error(err);
+    alert("Failed to save report.");
+  }
+}
+
+async function loadReports() {
+  try {
+    const res = await fetch(`${API_BASE}/reports`);
+    if (!res.ok) throw new Error("Failed to load reports");
+    const data = await res.json();
+    const list = data.reports || [];
+    const wrap = document.getElementById('reportsWrap');
+    if (!list.length) {
+      wrap.innerText = "No saved reports yet.";
+      return;
+    }
+    // build HTML list (newest first)
+    let html = '<ul>';
+    list.slice().reverse().forEach(r => {
+      const ts = new Date(r.ts * 1000).toLocaleString();
+      html += `<li><strong>${escapeHtml(r.name)}</strong> <span class="small muted">(${ts})</span> — <a href="#" data-id="${r.id}" class="view-report">View</a></li>`;
+    });
+    html += '</ul>';
+    wrap.innerHTML = html;
+
+    // attach click handlers for "View" (search original list by id)
+    wrap.querySelectorAll('.view-report').forEach(a => {
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        const id = a.dataset.id;
+        const rep = list.find(x => x.id === id);
+        if (!rep) {
+          alert("Report not found");
+          return;
+        }
+        // show report by rendering its payload summary and line chart
+        const p = rep.payload;
+        if (p && p.summary) {
+          // ensure controls visible and set segment select
+          document.getElementById('controls').style.display = 'block';
+          try { document.getElementById('segmentSelect').value = p.segment; } catch(e){}
+          // set lastSummary from saved payload so subsequent actions use saved data
+          lastSummary = p.summary || [];
+
+          // render the table for that saved summary
+          renderTable(p.summary, p.segment);
+
+          // if a specific segment_value was saved, set and load its curve
+          if (p.segment_value) {
+            document.getElementById('segmentValue').value = p.segment_value;
+            loadCurve(p.segment, p.segment_value);
+          }
+        }
+      });
+    });
+
+  } catch (err) {
+    console.error(err);
+    alert("Failed to load reports.");
+  }
+}
+
+/* ---------- small helpers ---------- */
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/[&<>"'`]/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;", "`":"&#96;"}[m]));
+}
+
+/* ---------- UI bindings ---------- */
+document.getElementById('btnLogin').addEventListener('click', login);
+document.getElementById('btnLoadEcl').addEventListener('click', () => {
+  const seg = document.getElementById('segmentSelect').value;
+  const val = document.getElementById('segmentValue').value;
+  // Render table filtered to selected value, then load curve
+  renderTable(lastSummary, seg, val);
+  if (val) loadCurve(seg, val);
+});
+document.getElementById('btnSaveReport').addEventListener('click', saveCurrentReport);
+document.getElementById('btnViewReports').addEventListener('click', () => {
+  document.getElementById('reportsCard').style.display = 'block';
+  loadReports();
+});
+
+</script>
+
+</body>
+</html>
