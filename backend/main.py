@@ -132,7 +132,7 @@ class LoginRequest(BaseModel):
     password: str
 
 @app.post("/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest = Body(...)):
     username = req.username
     password = req.password
     user = USERS.get(username)
