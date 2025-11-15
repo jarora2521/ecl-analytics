@@ -99,7 +99,10 @@
 </div>
 
 <script>
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = ""; // relative — means "same origin as the page"
+
+// Update header backend origin display
+document.getElementById('backendOrigin').innerText = window.location.origin || "same-origin";
 
 let token = null;
 let role = null;
