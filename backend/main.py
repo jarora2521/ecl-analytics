@@ -24,7 +24,9 @@ origins = [
     "http://localhost:3000",
     "http://127.0.0.1",
     "http://127.0.0.1:3000",
+    "https://ecl-analytics.netlify.app"   # ✅ ADDED — FIX FOR CORS
 ]
+
 frontend_origin = os.getenv("FRONTEND_ORIGIN")
 if frontend_origin:
     origins.append(frontend_origin)
@@ -97,10 +99,9 @@ def startup_event():
         print("Startup: dataset loaded, rows:", len(df))
     except Exception as exc:
         print("Startup: failed to load dataset:", exc)
-        # fail fast so Render shows the error (change if you want to keep app up)
         raise
 
-# small debug endpoint to inspect paths (helpful on Render)
+# small debug endpoint
 @app.get("/debug/paths")
 def debug_paths():
     cwd = os.getcwd()
@@ -167,7 +168,7 @@ def ecl_by_segment(segment_col: str):
 @app.get("/curve/{segment_col}/{segment_value}")
 def ecl_curve(segment_col: str, segment_value: str):
     if segment_col not in AVAILABLE_SEGMENTS and segment_col != "credit_score_bucket":
-        raise HTTPException(status_code=400, detail="Unsupported segment. Use /segments to see supported columns.")
+        raise HTTPException(status_code=400, detail="Unsupported segment.")
     df = _get_df_or_500().copy()
     if segment_col == "credit_score_bucket":
         df = bucket_credit_score(df)
@@ -177,7 +178,7 @@ def ecl_curve(segment_col: str, segment_value: str):
         mask = df[segment_col] == segment_value
     df_sub = df[mask]
     if df_sub.empty:
-        raise HTTPException(status_code=404, detail="No rows found for that segment value.")
+        raise HTTPException(status_code=404, detail="No rows found.")
     curve = ecl_service.compute_segment_ecl(df_sub, "credit_history_bucket")
     return {"segment_col": segment_col, "segment_value": segment_value, "curve": curve.to_dict(orient="records")}
 
